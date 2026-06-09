@@ -49,19 +49,6 @@ public class ScreeningController {
             String text = textExtractor.extract(file);
             ScreeningResult result = classifier.classify(text, criteria);
 
-            ScreeningRecord record = ScreeningRecord.builder()
-                    .fileName(file.getOriginalFilename())
-                    .jobTitle(jobTitle)
-                    .classification(result.classification())
-                    .score(result.score())
-                    .yearsExperience(result.yearsExperience())
-                    .matchedSkills(result.matchedSkills())
-                    .missingSkills(result.missingSkills())
-                    .summary(result.summary())
-                    .build();
-
-            repository.save(record);
-
             return ResponseEntity.ok(result);
 
         } catch (IOException e) {
