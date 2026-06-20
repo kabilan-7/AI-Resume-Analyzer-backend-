@@ -2,15 +2,16 @@ package com.example.backend.model;
 
 import jakarta.persistence.*;
 import lombok.*;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
-
 import java.time.Instant;
 import java.util.List;
 
 @Entity
 @Table(name = "screening_records")
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class ScreeningRecord {
 
     @Id
@@ -23,18 +24,27 @@ public class ScreeningRecord {
     private int score;
     private int yearsExperience;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(columnDefinition = "jsonb")
+    @ElementCollection
+    @CollectionTable(name = "matched_skills",
+            joinColumns = @JoinColumn(name = "record_id"))
+    @Column(name = "skill")
     private List<String> matchedSkills;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(columnDefinition = "jsonb")
+    @ElementCollection
+    @CollectionTable(name = "missing_skills",
+            joinColumns = @JoinColumn(name = "record_id"))
+    @Column(name = "skill")
     private List<String> missingSkills;
 
     @Column(length = 2000)
     private String summary;
 
     private Instant createdAt;
+
+    // ── NEW — links each screening to the recruiter who created it ──
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
 
     @PrePersist
     void prePersist() {
