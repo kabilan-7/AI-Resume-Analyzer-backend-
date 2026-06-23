@@ -141,6 +141,13 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- PDFBox — Apache licensed, free for commercial use -->
+		<dependency>
+			<groupId>org.apache.pdfbox</groupId>
+			<artifactId>pdfbox</artifactId>
+			<version>3.0.3</version>
+		</dependency>
+
 	</dependencies>
 
 	<!-- Required for Spring AI 2.0.0-M6 milestone artifacts -->

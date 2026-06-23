@@ -41,10 +41,16 @@ public class ScreeningRecord {
 
     private Instant createdAt;
 
-    // ── NEW — links each screening to the recruiter who created it ──
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
+
+    // ── NEW — links this screening to a job pipeline ───────────
+    // Nullable: single ad-hoc screenings (Phase 0 flow) don't
+    // need to belong to a job opening.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "job_opening_id")
+    private JobOpening jobOpening;
 
     @PrePersist
     void prePersist() {
