@@ -7,7 +7,6 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
-import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -24,8 +23,8 @@ public class ExportService {
     public String generateCsv(JobOpening job, List<ScreeningRecord> records) {
         StringBuilder sb = new StringBuilder();
 
-        sb.append("Rank,File Name,Score,Classification,Years Experience,")
-                .append("Matched Skills,Missing Skills,Summary\n");
+        sb.append("Rank,File Name,Score,Classification,")
+                .append("Years Experience,Matched Skills,Missing Skills,Summary\n");
 
         int rank = 1;
         for (ScreeningRecord r : records) {
@@ -34,8 +33,12 @@ public class ExportService {
             sb.append(r.getScore()).append(',');
             sb.append(r.getClassification()).append(',');
             sb.append(r.getYearsExperience()).append(',');
-            sb.append(escapeCsv(String.join("; ", r.getMatchedSkills()))).append(',');
-            sb.append(escapeCsv(String.join("; ", r.getMissingSkills()))).append(',');
+            sb.append(escapeCsv(
+                    r.getMatchedSkills() != null
+                            ? String.join("; ", r.getMatchedSkills()) : "")).append(',');
+            sb.append(escapeCsv(
+                    r.getMissingSkills() != null
+                            ? String.join("; ", r.getMissingSkills()) : "")).append(',');
             sb.append(escapeCsv(r.getSummary())).append('\n');
         }
 
@@ -51,23 +54,32 @@ public class ExportService {
     }
 
     // ════════════════════════════════════════════════════════════
-    // PDF export — built with PDFBox (Apache licensed, free to use)
+    // PDF export — PDFBox 2.x API
+    //
+    // Key differences from 3.x:
+    //   3.x: new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD)
+    //   2.x: PDType1Font.HELVETICA_BOLD   (static constant)
+    //
+    //   3.x: PDPageContentStream(doc, page)  (constructor differs)
+    //   2.x: PDPageContentStream(doc, page)  (same here, fine)
     // ════════════════════════════════════════════════════════════
 
-    private static final float MARGIN = 40;
-    private static final float ROW_HEIGHT = 22;
-    private static final float[] COL_WIDTHS = {30, 150, 45, 80, 35, 175};
+    private static final float MARGIN     = 40f;
+    private static final float ROW_HEIGHT = 22f;
+    private static final float[] COL_WIDTHS = {30f, 150f, 45f, 80f, 35f, 175f};
     private static final String[] HEADERS =
             {"#", "File name", "Score", "Fit", "Yrs", "Matched skills"};
 
-    public byte[] generatePdf(JobOpening job, List<ScreeningRecord> records) throws IOException {
+    public byte[] generatePdf(JobOpening job, List<ScreeningRecord> records)
+            throws IOException {
 
         try (PDDocument document = new PDDocument()) {
 
             Cursor cursor = newPage(document);
 
+            // Title
             cursor.content.beginText();
-            cursor.content.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 16);
+            cursor.content.setFont(PDType1Font.HELVETICA_BOLD, 16);
             cursor.content.newLineAtOffset(MARGIN, cursor.y);
             cursor.content.showText("Candidate ranking - " + job.getTitle());
             cursor.content.endText();
@@ -84,7 +96,8 @@ public class ExportService {
                     drawTableHeader(cursor);
                 }
 
-                String matched = String.join(", ", r.getMatchedSkills());
+                String matched = r.getMatchedSkills() != null
+                        ? String.join(", ", r.getMatchedSkills()) : "";
                 if (matched.length() > 38) {
                     matched = matched.substring(0, 35) + "...";
                 }
@@ -109,8 +122,7 @@ public class ExportService {
         }
     }
 
-    // Mutable holder — tracks the current page's content stream and
-    // y-position as rows get drawn down the page.
+    // Mutable cursor — tracks y-position and content stream per page
     private static class Cursor {
         PDPageContentStream content;
         float y;
@@ -123,44 +135,47 @@ public class ExportService {
     private Cursor newPage(PDDocument document) throws IOException {
         PDPage page = new PDPage(PDRectangle.A4);
         document.addPage(page);
-        PDPageContentStream content = new PDPageContentStream(document, page);
+        PDPageContentStream content =
+                new PDPageContentStream(document, page,
+                        PDPageContentStream.AppendMode.OVERWRITE, true);
         float startY = page.getMediaBox().getHeight() - MARGIN;
         return new Cursor(content, startY);
     }
 
     private void drawTableHeader(Cursor cursor) throws IOException {
         drawRow(cursor, HEADERS, true);
+        // Draw separator line under header
+        cursor.content.setLineWidth(0.5f);
+        cursor.content.moveTo(MARGIN, cursor.y + 6);
+        cursor.content.lineTo(MARGIN + colSum(), cursor.y + 6);
+        cursor.content.stroke();
     }
 
-    private void drawRow(Cursor cursor, String[] values, boolean isHeader) throws IOException {
-        float x = MARGIN;
-        float fontSize = isHeader ? 9 : 8.5f;
-        var font = isHeader
-                ? new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD)
-                : new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+    private void drawRow(Cursor cursor, String[] values, boolean header)
+            throws IOException {
 
-        for (int i = 0; i < values.length; i++) {
+        float x = MARGIN;
+        PDType1Font font = header
+                ? PDType1Font.HELVETICA_BOLD
+                : PDType1Font.HELVETICA;
+        float fontSize = header ? 9f : 8.5f;
+
+        for (int i = 0; i < values.length && i < COL_WIDTHS.length; i++) {
+            String text = values[i] == null ? "" : values[i];
             cursor.content.beginText();
             cursor.content.setFont(font, fontSize);
             cursor.content.newLineAtOffset(x, cursor.y);
-            cursor.content.showText(values[i] == null ? "" : values[i]);
+            cursor.content.showText(text);
             cursor.content.endText();
             x += COL_WIDTHS[i];
         }
 
         cursor.y -= ROW_HEIGHT;
-
-        if (isHeader) {
-            cursor.content.moveTo(MARGIN, cursor.y + 6);
-            cursor.content.lineTo(MARGIN + sum(COL_WIDTHS), cursor.y + 6);
-            cursor.content.setLineWidth(0.5f);
-            cursor.content.stroke();
-        }
     }
 
-    private float sum(float[] values) {
+    private float colSum() {
         float total = 0;
-        for (float v : values) total += v;
+        for (float w : COL_WIDTHS) total += w;
         return total;
     }
 
@@ -170,6 +185,7 @@ public class ExportService {
     }
 
     private String shortLabel(String classification) {
+        if (classification == null) return "";
         return switch (classification) {
             case "STRONG_FIT"   -> "Strong";
             case "POSSIBLE_FIT" -> "Possible";

@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
@@ -27,11 +28,11 @@ public class ScreeningController {
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ScreeningResult> screen(
-            @AuthenticationPrincipal User currentUser,   // ← injected automatically from JWT
-            @RequestPart("file") MultipartFile file,
-            @RequestPart("jobTitle") String jobTitle,
-            @RequestPart("requiredSkills") List<String> requiredSkills,
-            @RequestPart("minYearsExperience") String minYearsExperience) {
+            @AuthenticationPrincipal User currentUser,
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("jobTitle") String jobTitle,
+            @RequestParam("requiredSkills") List<String> requiredSkills,
+            @RequestParam("minYearsExperience") String minYearsExperience) {
 
         if (file.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File is empty");
@@ -76,6 +77,7 @@ public class ScreeningController {
      * ADMIN sees everyone's screenings (checked via role).
      */
     @GetMapping("/results")
+    @Transactional(readOnly = true)
     public ResponseEntity<List<ScreeningRecord>> getResults(
             @AuthenticationPrincipal User currentUser,
             @RequestParam(required = false) String classification) {
