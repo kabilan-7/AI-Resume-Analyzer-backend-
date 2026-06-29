@@ -4,7 +4,6 @@ import com.example.backend.dto.BulkScreeningItem;
 import com.example.backend.dto.BulkScreeningSummary;
 import com.example.backend.model.*;
 import com.example.backend.repository.ScreeningRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -28,44 +27,48 @@ public class BulkScreeningService {
             ResumeClassifierService classifier,
             ScreeningRepository screeningRepository,
             @Qualifier("screeningExecutor") Executor screeningExecutor) {
-        this.textExtractor = textExtractor;
-        this.classifier = classifier;
+        this.textExtractor       = textExtractor;
+        this.classifier          = classifier;
         this.screeningRepository = screeningRepository;
-        this.screeningExecutor = screeningExecutor;
+        this.screeningExecutor   = screeningExecutor;
     }
 
-    /**
-     * Screens every file in parallel against the same job criteria.
-     * Each resume is processed independently — one failure doesn't
-     * block the rest of the batch.
-     */
     public BulkScreeningSummary screenBulk(
             List<MultipartFile> files,
             JobOpening jobOpening,
             JobCriteria criteria,
             User currentUser) {
 
-        log.info("Starting bulk screening: {} files for job '{}'",
+        log.info("Bulk screening: {} files for job '{}'",
                 files.size(), jobOpening.getTitle());
 
-        // Fan out — submit all files to the thread pool at once
+        // ── Extract everything needed BEFORE spawning threads ──────
+        // Worker threads run after the Hibernate session closes.
+        // Capture only plain Java values here — no entity references.
+        Long   jobId    = jobOpening.getId();
+        String jobTitle = jobOpening.getTitle();
+        Long   userId   = currentUser.getId();
+
+        // Fan out
         List<CompletableFuture<BulkScreeningItem>> futures = files.stream()
                 .map(file -> CompletableFuture.supplyAsync(
-                        () -> screenOne(file, jobOpening, criteria, currentUser),
+                        () -> screenOne(file, jobId, jobTitle, userId, criteria),
                         screeningExecutor))
                 .toList();
 
-        // Fan in — wait for every result, in original submission order
+        // Fan in
         List<BulkScreeningItem> items = futures.stream()
                 .map(CompletableFuture::join)
                 .toList();
 
-        int successCount = (int) items.stream().filter(BulkScreeningItem::success).count();
+        int successCount = (int) items.stream()
+                .filter(BulkScreeningItem::success).count();
 
-        log.info("Bulk screening complete: {}/{} succeeded", successCount, files.size());
+        log.info("Bulk screening complete: {}/{} succeeded",
+                successCount, files.size());
 
         return new BulkScreeningSummary(
-                jobOpening.getId(),
+                jobId,
                 files.size(),
                 successCount,
                 files.size() - successCount,
@@ -73,35 +76,45 @@ public class BulkScreeningService {
         );
     }
 
-    /**
-     * Runs on a worker thread from the pool. Extracts text, classifies
-     * with the AI, and saves to the database — all independently of
-     * any other resume in the batch.
-     */
+    // ── Worker method — runs on a pool thread ──────────────────────
+    // Receives only plain Java primitives and records — no JPA entities.
+    // This avoids LazyInitializationException entirely.
     private BulkScreeningItem screenOne(
             MultipartFile file,
-            JobOpening jobOpening,
-            JobCriteria criteria,
-            User currentUser) {
+            Long jobId,
+            String jobTitle,
+            Long userId,
+            JobCriteria criteria) {
 
         String fileName = file.getOriginalFilename();
 
         try {
+            // 1. Extract text
             String text = textExtractor.extract(file);
+
+            // 2. Classify with AI
             ScreeningResult result = classifier.classify(text, criteria);
 
-            ScreeningRecord record = ScreeningRecord.builder()
-                    .fileName(fileName)
-                    .jobTitle(jobOpening.getTitle())
-                    .classification(result.classification())
-                    .score(result.score())
-                    .yearsExperience(result.yearsExperience())
-                    .matchedSkills(result.matchedSkills())
-                    .missingSkills(result.missingSkills())
-                    .summary(result.summary())
-                    .user(currentUser)
-                    .jobOpening(jobOpening)
-                    .build();
+            // 3. Build entity using only IDs — no lazy loading needed
+            ScreeningRecord record = new ScreeningRecord();
+            record.setFileName(fileName);
+            record.setJobTitle(jobTitle);
+            record.setClassification(result.classification());
+            record.setScore(result.score());
+            record.setYearsExperience(result.yearsExperience());
+            record.setMatchedSkills(result.matchedSkills());
+            record.setMissingSkills(result.missingSkills());
+            record.setSummary(result.summary());
+
+            // Use proxy references by ID — no DB lookup, no lazy loading
+            User userRef = new User();
+            userRef.setId(userId);
+
+            JobOpening jobRef = new JobOpening();
+            jobRef.setId(jobId);
+
+            record.setUser(userRef);
+            record.setJobOpening(jobRef);
 
             screeningRepository.save(record);
 

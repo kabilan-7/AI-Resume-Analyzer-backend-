@@ -26,12 +26,13 @@ import java.util.List;
 public class JobOpeningController {
 
     private final JobOpeningRepository jobOpeningRepository;
-    private final ScreeningRepository screeningRepository;
+    private final ScreeningRepository  screeningRepository;
     private final BulkScreeningService bulkScreeningService;
-    private final ExportService exportService;
+    private final ExportService        exportService;
 
     private static final int MAX_BULK_FILES = 25;
 
+    // ── CRUD ─────────────────────────────────────────────────────────────
 
     @PostMapping
     public ResponseEntity<JobOpening> createJob(
@@ -55,7 +56,6 @@ public class JobOpeningController {
             @AuthenticationPrincipal User currentUser) {
 
         boolean isAdmin = currentUser.getRole() == Role.ADMIN;
-
         List<JobOpening> jobs = isAdmin
                 ? jobOpeningRepository.findAllByOrderByCreatedAtDesc()
                 : jobOpeningRepository.findByCreatedByOrderByCreatedAtDesc(currentUser);
@@ -70,33 +70,25 @@ public class JobOpeningController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteJob(@PathVariable Long id) {
-        JobOpening job = findJobOrThrow(id);
-        jobOpeningRepository.delete(job);
+        jobOpeningRepository.delete(findJobOrThrow(id));
         return ResponseEntity.noContent().build();
     }
 
-    // ════════════════════════════════════════════════════════════
-    // Ranked candidates for one job
-    // ════════════════════════════════════════════════════════════
+    // ── Candidates ────────────────────────────────────────────────────────
 
     @GetMapping("/{id}/candidates")
     public ResponseEntity<List<ScreeningRecord>> getCandidates(@PathVariable Long id) {
-        JobOpening job = findJobOrThrow(id);
-        List<ScreeningRecord> candidates = screeningRepository.findByJobOpeningOrderByScoreDesc(job);
-        return ResponseEntity.ok(candidates);
+        return ResponseEntity.ok(
+                screeningRepository.findByJobOpeningOrderByScoreDesc(findJobOrThrow(id)));
     }
 
-    // ════════════════════════════════════════════════════════════
-    // Bulk screening
-    // ════════════════════════════════════════════════════════════
+    // ── Bulk screening ────────────────────────────────────────────────────
 
     @PostMapping(value = "/{id}/bulk-screen", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<BulkScreeningSummary> bulkScreen(
             @AuthenticationPrincipal User currentUser,
             @PathVariable Long id,
             @RequestPart("files") List<MultipartFile> files) {
-
-        JobOpening job = findJobOrThrow(id);
 
         if (files.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No files uploaded");
@@ -106,8 +98,20 @@ public class JobOpeningController {
                     "Max " + MAX_BULK_FILES + " files per bulk upload");
         }
 
+        // findByIdWithSkills uses JOIN FETCH so requiredSkills is fully
+        // loaded before any worker thread touches it
+        JobOpening job = jobOpeningRepository.findByIdWithSkills(id)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "No job found with id: " + id));
+
+        // Build JobCriteria from eagerly loaded data — plain record, no proxy
         JobCriteria criteria = new JobCriteria(
-                job.getTitle(), job.getRequiredSkills(), job.getMinYearsExperience());
+                job.getTitle(),
+                List.copyOf(job.getRequiredSkills()),
+                job.getMinYearsExperience());
+
+        log.info("Bulk screening {} files for job '{}' skills={}",
+                files.size(), job.getTitle(), criteria.requiredSkills());
 
         BulkScreeningSummary summary =
                 bulkScreeningService.screenBulk(files, job, criteria, currentUser);
@@ -115,22 +119,21 @@ public class JobOpeningController {
         return ResponseEntity.ok(summary);
     }
 
-    // ════════════════════════════════════════════════════════════
-    // Export
-    // ════════════════════════════════════════════════════════════
+    // ── Export ────────────────────────────────────────────────────────────
 
     @GetMapping("/{id}/export/csv")
     public ResponseEntity<byte[]> exportCsv(@PathVariable Long id) {
         JobOpening job = findJobOrThrow(id);
-        List<ScreeningRecord> candidates = screeningRepository.findByJobOpeningOrderByScoreDesc(job);
+        List<ScreeningRecord> candidates =
+                screeningRepository.findByJobOpeningOrderByScoreDesc(job);
 
-        String csv = exportService.generateCsv(job, candidates);
-        byte[] bytes = csv.getBytes(StandardCharsets.UTF_8);
-
-        String filename = sanitizeFilename(job.getTitle()) + "-candidates.csv";
+        String csv      = exportService.generateCsv(job, candidates);
+        byte[] bytes    = csv.getBytes(StandardCharsets.UTF_8);
+        String filename = sanitize(job.getTitle()) + "-candidates.csv";
 
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"" + filename + "\"")
                 .contentType(MediaType.parseMediaType("text/csv"))
                 .body(bytes);
     }
@@ -138,35 +141,37 @@ public class JobOpeningController {
     @GetMapping("/{id}/export/pdf")
     public ResponseEntity<byte[]> exportPdf(@PathVariable Long id) {
         JobOpening job = findJobOrThrow(id);
-        List<ScreeningRecord> candidates = screeningRepository.findByJobOpeningOrderByScoreDesc(job);
+        List<ScreeningRecord> candidates =
+                screeningRepository.findByJobOpeningOrderByScoreDesc(job);
 
         try {
-            byte[] pdfBytes = exportService.generatePdf(job, candidates);
-            String filename = sanitizeFilename(job.getTitle()) + "-candidates.pdf";
+            byte[] pdf      = exportService.generatePdf(job, candidates);
+            String filename = sanitize(job.getTitle()) + "-candidates.pdf";
 
             return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"" + filename + "\"")
                     .contentType(MediaType.APPLICATION_PDF)
-                    .body(pdfBytes);
+                    .body(pdf);
 
         } catch (IOException e) {
             log.error("PDF generation failed", e);
             throw new ResponseStatusException(
-                    HttpStatus.INTERNAL_SERVER_ERROR, "Could not generate PDF: " + e.getMessage());
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Could not generate PDF: " + e.getMessage());
         }
     }
 
-    // ════════════════════════════════════════════════════════════
-    // Helpers
-    // ════════════════════════════════════════════════════════════
+    // ── Helpers ───────────────────────────────────────────────────────────
 
+    // All lookups use JOIN FETCH so requiredSkills is always initialized
     private JobOpening findJobOrThrow(Long id) {
-        return jobOpeningRepository.findById(id)
+        return jobOpeningRepository.findByIdWithSkills(id)
                 .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "No job opening found with id: " + id));
+                        HttpStatus.NOT_FOUND, "No job found with id: " + id));
     }
 
-    private String sanitizeFilename(String title) {
+    private String sanitize(String title) {
         return title.replaceAll("[^a-zA-Z0-9\\-_]", "_").toLowerCase();
     }
 }
